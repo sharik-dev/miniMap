@@ -35,6 +35,7 @@ struct SpaceInfo: Identifiable {
     var appIcons: [NSImage]
     var appNames: [String]
     var isFullscreen: Bool
+    var mainAppPID: pid_t?
 }
 
 // MARK: - SpacesManager
@@ -139,12 +140,14 @@ final class SpacesManager {
 
             var icons: [NSImage] = []
             var names: [String]  = []
+            var mainPID: pid_t?
 
             if isFullscreen {
                 // For fullscreen spaces, macOS gives us the PID directly
                 if let pid = fullscreenPID[spaceID],
                    let app = NSRunningApplication(processIdentifier: pid),
                    let icon = app.icon {
+                    mainPID = pid
                     icons = [icon]
                     names = [app.localizedName ?? "Unknown"]
                 }
@@ -157,6 +160,9 @@ final class SpacesManager {
                         let icon = app.icon,
                         app.activationPolicy == .regular
                     else { continue }
+                    
+                    if mainPID == nil { mainPID = pid }
+                    
                     icons.append(icon)
                     names.append(app.localizedName ?? "Unknown")
                     if icons.count >= 1 { break }
@@ -168,7 +174,8 @@ final class SpacesManager {
                 index: index,
                 appIcons: icons,
                 appNames: names,
-                isFullscreen: isFullscreen
+                isFullscreen: isFullscreen,
+                mainAppPID: mainPID
             )
         }
     }
@@ -206,6 +213,18 @@ final class SpacesManager {
     }
 
     func switchToSpace(at index: Int) {
+        guard index < spaces.count else { return }
+        let space = spaces[index]
+        
+        // Primary strategy: Let macOS switch space automatically by activating the app
+        if let pid = space.mainAppPID,
+           let app = NSRunningApplication(processIdentifier: pid) {
+            app.activate(options: .activateIgnoringOtherApps)
+            // Stop here since opening the app will automatically slide to its space
+            return
+        }
+
+        // Fallback strategy: empty space switch via Keyboard shortcut simulation
         let prompt = kAXTrustedCheckOptionPrompt.takeRetainedValue() as String
         let opts = [prompt: true] as CFDictionary
         guard AXIsProcessTrustedWithOptions(opts) else { return }

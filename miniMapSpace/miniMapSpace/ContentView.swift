@@ -12,26 +12,25 @@ struct ContentView: View {
                 Text("Loading spaces...")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .padding(.horizontal, 20)
             } else {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 6) {
-                        ForEach(manager.spaces) { space in
-                            SpaceSegment(
-                                space: space,
-                                isActive: space.id == manager.activeSpaceID
-                            )
-                            .onTapGesture {
-                                manager.switchToSpace(at: space.index)
-                            }
+                HStack(spacing: 6) {
+                    ForEach(manager.spaces) { space in
+                        SpaceSegment(
+                            space: space,
+                            isActive: space.id == manager.activeSpaceID
+                        )
+                        .onTapGesture {
+                            manager.switchToSpace(at: space.index)
                         }
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
                 }
-                .scrollIndicators(.hidden)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
             }
         }
         .frame(height: 50)
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
