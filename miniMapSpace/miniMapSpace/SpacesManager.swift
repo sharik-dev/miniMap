@@ -57,18 +57,12 @@ final class SpacesManager {
     }
 
     func refresh() {
-        guard let rawSpaces = CGSCopySpaces(cid, kCGSSpaceAll) as? [NSNumber] else {
-            spaces = []
-            return
-        }
-
-        let spaceIDs = rawSpaces.map { CGSSpaceID($0.uint64Value) }
         activeSpaceID = CGSGetActiveSpace(cid)
 
-        // --- Step 1: parse CGSCopyManagedDisplaySpaces for type + fullscreen PIDs ---
-        // type == 0 → regular desktop, type == 4 → fullscreen, type == 2 → tiled/split
+        // --- Step 1: parse CGSCopyManagedDisplaySpaces for type + fullscreen PIDs AND ordered spaces ---
         var spaceType: [CGSSpaceID: Int] = [:]          // spaceID → type
         var fullscreenPID: [CGSSpaceID: pid_t] = [:]    // spaceID → pid (fullscreen only)
+        var orderedSpaceIDs: [CGSSpaceID] = []
 
         if let displays = CGSCopyManagedDisplaySpaces(cid) as? [[String: Any]] {
             for display in displays {
@@ -76,6 +70,8 @@ final class SpacesManager {
                 for info in spaceList {
                     guard let idNum = info["id64"] as? NSNumber else { continue }
                     let sid = CGSSpaceID(idNum.uint64Value)
+                    orderedSpaceIDs.append(sid)
+
                     let type = info["type"] as? Int ?? 0
                     spaceType[sid] = type
                     if type == 4, let pid = info["pid"] as? pid_t, pid > 0 {
@@ -83,6 +79,11 @@ final class SpacesManager {
                     }
                 }
             }
+        }
+
+        // If it failed to get via managed display spaces, fallback to raw spaces
+        if orderedSpaceIDs.isEmpty, let rawSpaces = CGSCopySpaces(cid, kCGSSpaceAll) as? [NSNumber] {
+             orderedSpaceIDs = rawSpaces.map { CGSSpaceID($0.uint64Value) }
         }
 
         // --- Step 2: map windows → spaces (for regular desktop spaces) ---
@@ -133,7 +134,7 @@ final class SpacesManager {
         }
 
         // --- Step 3: build SpaceInfo list ---
-        spaces = spaceIDs.enumerated().map { (index, spaceID) in
+        spaces = orderedSpaceIDs.enumerated().map { (index, spaceID) in
             let isFullscreen = spaceType[spaceID] == 4
 
             var icons: [NSImage] = []
@@ -158,7 +159,7 @@ final class SpacesManager {
                     else { continue }
                     icons.append(icon)
                     names.append(app.localizedName ?? "Unknown")
-                    if icons.count >= 4 { break }
+                    if icons.count >= 1 { break }
                 }
             }
 

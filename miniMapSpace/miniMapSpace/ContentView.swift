@@ -47,24 +47,10 @@ struct SpaceSegment: View {
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(space.appIcons.indices, id: \.self) { i in
-                    ZStack(alignment: .bottomTrailing) {
-                        Image(nsImage: space.appIcons[i])
-                            .resizable()
-                            .frame(width: 20, height: 20)
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
-
-                        // Fullscreen badge
-                        if space.isFullscreen {
-                            Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                .font(.system(size: 6, weight: .bold))
-                                .foregroundStyle(.white)
-                                .padding(2)
-                                .background(Color.blue.opacity(0.85), in: Circle())
-                                .offset(x: 4, y: 4)
-                        }
-                    }
-                    .padding(.bottom, space.isFullscreen ? 4 : 0)
-                    .padding(.trailing, space.isFullscreen ? 4 : 0)
+                    Image(nsImage: space.appIcons[i])
+                        .resizable()
+                        .frame(width: 20, height: 20)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
                 }
             }
         }
