@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "role": "mobile",
+    "model": "opus",
+    "provider": "aider",
+    "customName": "Mobile Developer",
+    "isPersonal": false,
+    "id": "agent-1776371801515-yb3me3"
+  }
+]
