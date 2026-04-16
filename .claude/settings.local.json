@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xcodebuild build *)",
+      "Bash(open -a \"/Users/sharikmohamed/Library/Developer/Xcode/DerivedData/miniMapSpace-btpthztzyrybneamliibmbxqhjwg/Build/Products/Debug/miniMapSpace.app\")",
+      "Bash(log stream *)",
+      "Bash(pkill -f \"log stream\")",
+      "Bash(killall miniMapSpace)",
+      "Bash(git add *)"
+    ]
+  }
+}
