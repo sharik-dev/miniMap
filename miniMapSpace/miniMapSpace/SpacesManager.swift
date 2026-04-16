@@ -15,14 +15,18 @@ func CGSMainConnectionID() -> CGSConnectionID
 @_silgen_name("CGSGetActiveSpace")
 func CGSGetActiveSpace(_ cid: CGSConnectionID) -> CGSSpaceID
 
-@_silgen_name("CGSGetNumberOfWorkspaces")
-func CGSGetNumberOfWorkspaces(_ cid: CGSConnectionID, _ count: UnsafeMutablePointer<Int>) -> CGError
-
 @_silgen_name("CGSCopySpaces")
 func CGSCopySpaces(_ cid: CGSConnectionID, _ options: UInt32) -> CFArray?
 
-@_silgen_name("CGSGetWindowWorkspace")
-func CGSGetWindowWorkspace(_ cid: CGSConnectionID, _ wid: CGWindowID, _ workspace: UnsafeMutablePointer<CGSSpaceID>) -> CGError
+/// Returns per-window space memberships:
+/// [ { "ManagedSpaceID": NSNumber, "WindowID": NSNumber }, … ]
+@_silgen_name("CGSCopySpacesForWindows")
+func CGSCopySpacesForWindows(_ cid: CGSConnectionID, _ mask: UInt32, _ windowIDs: CFArray) -> CFArray?
+
+/// Returns per-display space metadata including type and fullscreen PIDs:
+/// [ { "Spaces": [ { "id64": NSNumber, "type": Int, "pid": pid_t? } ] } ]
+@_silgen_name("CGSCopyManagedDisplaySpaces")
+func CGSCopyManagedDisplaySpaces(_ cid: CGSConnectionID) -> CFArray?
 
 // MARK: - Data Models
 struct SpaceInfo: Identifiable {
@@ -30,6 +34,7 @@ struct SpaceInfo: Identifiable {
     let index: Int
     var appIcons: [NSImage]
     var appNames: [String]
+    var isFullscreen: Bool
 }
 
 // MARK: - SpacesManager
@@ -40,7 +45,8 @@ final class SpacesManager {
 
     private var spaceChangeObserver: Any?
     private var appActivationObserver: Any?
-    private var appDeactivationObserver: Any?
+    private var appLaunchObserver: Any?
+    private var appTerminateObserver: Any?
     private let cid: CGSConnectionID
     private var refreshTask: Task<Void, Never>?
 
@@ -59,90 +65,149 @@ final class SpacesManager {
         let spaceIDs = rawSpaces.map { CGSSpaceID($0.uint64Value) }
         activeSpaceID = CGSGetActiveSpace(cid)
 
-        let windowList = CGWindowListCopyWindowInfo(
-            [.optionAll, .excludeDesktopElements],
-            kCGNullWindowID
-        ) as? [[String: Any]] ?? []
+        // --- Step 1: parse CGSCopyManagedDisplaySpaces for type + fullscreen PIDs ---
+        // type == 0 → regular desktop, type == 4 → fullscreen, type == 2 → tiled/split
+        var spaceType: [CGSSpaceID: Int] = [:]          // spaceID → type
+        var fullscreenPID: [CGSSpaceID: pid_t] = [:]    // spaceID → pid (fullscreen only)
 
-        spaces = spaceIDs.enumerated().map { (index, spaceID) in
-            let (icons, names) = appsOnSpace(spaceID: spaceID, windowList: windowList)
-            return SpaceInfo(id: spaceID, index: index, appIcons: icons, appNames: names)
+        if let displays = CGSCopyManagedDisplaySpaces(cid) as? [[String: Any]] {
+            for display in displays {
+                guard let spaceList = display["Spaces"] as? [[String: Any]] else { continue }
+                for info in spaceList {
+                    guard let idNum = info["id64"] as? NSNumber else { continue }
+                    let sid = CGSSpaceID(idNum.uint64Value)
+                    let type = info["type"] as? Int ?? 0
+                    spaceType[sid] = type
+                    if type == 4, let pid = info["pid"] as? pid_t, pid > 0 {
+                        fullscreenPID[sid] = pid
+                    }
+                }
+            }
         }
-    }
 
-    private func appsOnSpace(spaceID: CGSSpaceID, windowList: [[String: Any]]) -> ([NSImage], [String]) {
-        var seenPIDs = Set<pid_t>()
-        var icons: [NSImage] = []
-        var names: [String] = []
+        // --- Step 2: map windows → spaces (for regular desktop spaces) ---
+        // Use .optionAll to get windows on ALL spaces, filter to layer == 0 only
+        var spaceToPIDs: [CGSSpaceID: Set<pid_t>] = [:]
 
-        for info in windowList {
-            guard
-                let wid = info[kCGWindowNumber as String] as? CGWindowID,
-                let ownerPID = info[kCGWindowOwnerPID as String] as? pid_t,
-                let layer = info[kCGWindowLayer as String] as? Int,
-                layer == 0,
-                !seenPIDs.contains(ownerPID)
-            else { continue }
+        if let allWindowsRaw = CGWindowListCopyWindowInfo(
+            [.optionAll, .excludeDesktopElements], kCGNullWindowID
+        ) as? [[String: Any]] {
 
-            var windowSpaceID: CGSSpaceID = 0
-            let err = CGSGetWindowWorkspace(cid, wid, &windowSpaceID)
-            guard err == .success, windowSpaceID == spaceID else { continue }
-
-            seenPIDs.insert(ownerPID)
-
-            if let app = NSRunningApplication(processIdentifier: ownerPID),
-               let icon = app.icon {
-                icons.append(icon)
-                names.append(app.localizedName ?? "")
+            // Build windowID → PID (layer 0 = normal app windows)
+            var windowToPID: [CGWindowID: pid_t] = [:]
+            for info in allWindowsRaw {
+                guard
+                    let wid   = info[kCGWindowNumber as String] as? CGWindowID,
+                    let pid   = info[kCGWindowOwnerPID as String] as? pid_t,
+                    let layer = info[kCGWindowLayer as String] as? Int,
+                    layer == 0, pid > 0
+                else { continue }
+                windowToPID[wid] = pid
             }
 
-            if icons.count >= 3 { break }
+            // Ask CGS which space(s) each window lives on
+            let widArray = windowToPID.keys.map { NSNumber(value: $0) } as CFArray
+
+            if let mappings = CGSCopySpacesForWindows(cid, kCGSSpaceAll, widArray) as? [[String: Any]] {
+
+                // First pass: collect ALL space memberships per window
+                var windowToSpaces: [CGWindowID: Set<CGSSpaceID>] = [:]
+                for m in mappings {
+                    guard
+                        let spaceNum = m["ManagedSpaceID"] as? NSNumber,
+                        let widNum   = m["WindowID"] as? NSNumber
+                    else { continue }
+                    let sid = CGSSpaceID(spaceNum.uint64Value)
+                    let wid = CGWindowID(widNum.uint32Value)
+                    windowToSpaces[wid, default: []].insert(sid)
+                }
+
+                // Second pass: only include windows that live on EXACTLY one space.
+                // Windows on multiple spaces are "All Spaces" overlays → skip them.
+                for (wid, sids) in windowToSpaces {
+                    guard sids.count == 1, let sid = sids.first else { continue }
+                    guard let pid = windowToPID[wid] else { continue }
+                    spaceToPIDs[sid, default: []].insert(pid)
+                }
+            }
         }
 
-        return (icons, names)
+        // --- Step 3: build SpaceInfo list ---
+        spaces = spaceIDs.enumerated().map { (index, spaceID) in
+            let isFullscreen = spaceType[spaceID] == 4
+
+            var icons: [NSImage] = []
+            var names: [String]  = []
+
+            if isFullscreen {
+                // For fullscreen spaces, macOS gives us the PID directly
+                if let pid = fullscreenPID[spaceID],
+                   let app = NSRunningApplication(processIdentifier: pid),
+                   let icon = app.icon {
+                    icons = [icon]
+                    names = [app.localizedName ?? "Unknown"]
+                }
+            } else {
+                // Regular desktop space — use window-mapped PIDs
+                let pids = spaceToPIDs[spaceID] ?? []
+                for pid in pids {
+                    guard
+                        let app  = NSRunningApplication(processIdentifier: pid),
+                        let icon = app.icon,
+                        app.activationPolicy == .regular
+                    else { continue }
+                    icons.append(icon)
+                    names.append(app.localizedName ?? "Unknown")
+                    if icons.count >= 4 { break }
+                }
+            }
+
+            return SpaceInfo(
+                id: spaceID,
+                index: index,
+                appIcons: icons,
+                appNames: names,
+                isFullscreen: isFullscreen
+            )
+        }
     }
 
     private func startObserving() {
         spaceChangeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.debouncedRefresh()
-        }
+            object: nil, queue: .main
+        ) { [weak self] _ in self?.debouncedRefresh() }
 
         appActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.debouncedRefresh()
-        }
+            object: nil, queue: .main
+        ) { [weak self] _ in self?.debouncedRefresh() }
 
-        appDeactivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didDeactivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.debouncedRefresh()
-        }
+        appLaunchObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didLaunchApplicationNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in self?.debouncedRefresh() }
+
+        appTerminateObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in self?.debouncedRefresh() }
     }
 
     private func debouncedRefresh() {
         refreshTask?.cancel()
         refreshTask = Task {
-            try? await Task.sleep(nanoseconds: 100_000_000)
+            try? await Task.sleep(nanoseconds: 200_000_000)
             if !Task.isCancelled {
-                refresh()
+                await MainActor.run { refresh() }
             }
         }
     }
 
     func switchToSpace(at index: Int) {
-        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        guard AXIsProcessTrustedWithOptions(opts) else {
-            return
-        }
+        let prompt = kAXTrustedCheckOptionPrompt.takeRetainedValue() as String
+        let opts = [prompt: true] as CFDictionary
+        guard AXIsProcessTrustedWithOptions(opts) else { return }
 
         let keyCodes: [CGKeyCode] = [18, 19, 20, 21, 23, 22, 26, 28, 25]
         guard index < keyCodes.count else { return }
@@ -151,10 +216,10 @@ final class SpacesManager {
         let src = CGEventSource(stateID: .hidSystemState)
 
         let down = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: true)
-        let up = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: false)
+        let up   = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: false)
 
         down?.flags = .maskControl
-        up?.flags = .maskControl
+        up?.flags   = .maskControl
 
         down?.post(tap: .cghidEventTap)
         usleep(50_000)
@@ -163,14 +228,8 @@ final class SpacesManager {
 
     deinit {
         refreshTask?.cancel()
-        if let obs = spaceChangeObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(obs)
-        }
-        if let obs = appActivationObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(obs)
-        }
-        if let obs = appDeactivationObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(obs)
-        }
+        [spaceChangeObserver, appActivationObserver, appLaunchObserver, appTerminateObserver]
+            .compactMap { $0 }
+            .forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
     }
 }

@@ -24,7 +24,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func checkAccessibilityPermission() {
-        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        let prompt = kAXTrustedCheckOptionPrompt.takeRetainedValue() as String
+        let opts = [prompt: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(opts)
     }
 }

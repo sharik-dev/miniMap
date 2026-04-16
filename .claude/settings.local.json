@@ -6,7 +6,10 @@
       "Bash(log stream *)",
       "Bash(pkill -f \"log stream\")",
       "Bash(killall miniMapSpace)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(screencapture -x /tmp/spacemap_test.png)",
+      "Read(//tmp/**)"
     ]
   }
 }

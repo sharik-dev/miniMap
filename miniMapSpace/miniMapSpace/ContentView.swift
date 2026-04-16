@@ -47,10 +47,24 @@ struct SpaceSegment: View {
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(space.appIcons.indices, id: \.self) { i in
-                    Image(nsImage: space.appIcons[i])
-                        .resizable()
-                        .frame(width: 20, height: 20)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                    ZStack(alignment: .bottomTrailing) {
+                        Image(nsImage: space.appIcons[i])
+                            .resizable()
+                            .frame(width: 20, height: 20)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+
+                        // Fullscreen badge
+                        if space.isFullscreen {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .font(.system(size: 6, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(2)
+                                .background(Color.blue.opacity(0.85), in: Circle())
+                                .offset(x: 4, y: 4)
+                        }
+                    }
+                    .padding(.bottom, space.isFullscreen ? 4 : 0)
+                    .padding(.trailing, space.isFullscreen ? 4 : 0)
                 }
             }
         }
@@ -72,9 +86,12 @@ struct SpaceSegment: View {
                 )
         )
         .animation(.easeInOut(duration: 0.15), value: isActive)
-        .help(space.appNames.joined(separator: ", "))
+        .help(space.isFullscreen
+              ? "Fullscreen: \(space.appNames.first ?? "")"
+              : space.appNames.joined(separator: ", "))
     }
 }
+
 
 struct GlassmorphismBackground: View {
     var body: some View {
